@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GenAI RTO & Returns Intelligence</title>
+    
+    <!-- Dependencies -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+    <script src="https://unpkg.com/recharts@2.1.12/umd/Recharts.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <!-- NEW: SheetJS for Excel Parsing -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&display=swap');
+        body { font-family: 'Plus Jakarta Sans', sans-serif; overflow-x: hidden; }
+        .animate-in { animation: fadeIn 0.4s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body class="bg-[#F8FAFC]">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // ==========================================
+        // 🚨 ENVIRONMENT KEY INJECTION 🚨
+        const apiKey = ""; 
+        // ==========================================
+
+        const { useState, useEffect, useRef } = React;
+        const { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } = window.Recharts;
+
+        // Icon Component
+        const Icon = ({ name, className = "w-5 h-5" }) => {
+            const kebabName = name.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
+            const iconRef = useRef(null);
+            
+            useEffect(() => {
+                if (window.lucide && iconRef.current) {
+                    iconRef.current.innerHTML = ''; 
+                    const iElement = document.createElement('i');
+                    iElement.setAttribute('data-lucide', kebabName);
+                    if (className) iElement.setAttribute('class', className);
+                    iconRef.current.appendChild(iElement);
+                    window.lucide.createIcons({ root: iconRef.current });
+                }
+            }, [name, kebabName, className]);
+            return <span ref={iconRef} className="inline-flex items-center justify-center"></span>;
+        };
+
+        // Mock Data for Overview
+        const TREND_DATA = [{ name: 'W1', rto: 12 }, { name: 'W2', rto: 19 }, { name: 'W3', rto: 15 }, { name: 'W4', rto: 22 }];
+        const REASONS = [
+            { name: 'Packaging Damaged', value: 45, color: '#6366f1' },
+            { name: 'Quality Issues', value: 25, color: '#f59e0b' },
+            { name: 'Wrong Item', value: 15, color: '#10b981' },
+            { name: 'Customer Rejected', value: 15, color: '#ef4444' }
+        ];
+
+        const App = () => {
+            const [activeTab, setActiveTab] = useState('overview');
+            const [userApiKey, setUserApiKey] = useState(""); 
+            const [loading, setLoading] = useState(false);
+            const [error, setError] = useState(null);
+            
+            // Feature States
+            const [scanResult, setScanResult] = useState(null);
+            const [rcaResult, setRcaResult] = useState(null);
+            const [bulkResult, setBulkResult] = useState(null); // NEW: State for Excel Data
+            
+            // NEW: State for Shipping Calculator
+            const [shippingWeight, setShippingWeight] = useState("0.5");
+            const [shippingPincode, setShippingPincode] = useState("");
+            const [shippingResult, setShippingResult] = useState(null);
+            
+            const [activeModelName, setActiveModelInfo] = useState("Standby");
+
+            const extractJSON = (text) => {
+                try {
+                    const firstBrace = text.indexOf('{');
+                    const lastBrace = text.lastIndexOf('}');
+                    if (firstBrace === -1 || lastBrace === -1) throw new Error("Invalid format received from AI.");
+                    return JSON.parse(text.substring(firstBrace, lastBrace + 1));
+                } catch (e) {
+                    throw new Error("Failed to parse AI data. Ensure the API is returning valid JSON.");
+                }
+            };
+
+            const callGeminiReal = async (promptText, imageBase64 = null, mimeType = "image/jpeg") => {
+                setLoading(true);
+                setError(null);
+                setActiveModelInfo("Processing request...");
+
+                const finalKey = apiKey || userApiKey.trim();
+                
+                if (!finalKey) {
+                    setError("Missing API Key. Please paste your NEW API key in the sidebar.");
+                    setLoading(false); return null;
+                }
+                if (!finalKey.startsWith("AIza") || finalKey.length > 100) {
+                    setError("Invalid API Key format. Google API keys start with 'AIza'.");
+                    setLoading(false); return null;
+                }
+
+                try {
+                    let activeModel = "";
+
+                    // Auto-Discover the correct model for the user's specific key
+                    if (apiKey) {
+                        activeModel = "gemini-2.5-flash-preview-09-2025";
+                    } else {
+                        const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${finalKey}`);
+                        const listData = await listRes.json();
+                        
+                        if (!listRes.ok) throw new Error(listData.error?.message || "Failed to validate API Key.");
+                        
+                        const validModels = (listData.models || [])
+                            .filter(m => m.supportedGenerationMethods?.includes("generateContent"))
+                            .map(m => m.name.replace('models/', ''));
+                            
+                        if (validModels.length === 0) throw new Error("Your API Key has no generative models enabled.");
+
+                        const preferred = imageBase64 
+                            ? ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro-vision'] 
+                            : ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro'];
+                            
+                        activeModel = preferred.find(m => validModels.includes(m)) || validModels[0];
+                    }
+
+                    setActiveModelInfo(`Using: ${activeModel}`);
+
+                    const url = `https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent?key=${finalKey}`;
+                    const parts = [{ text: promptText }];
+                    if (imageBase64) parts.push({ inlineData: { mimeType: mimeType, data: imageBase64 } });
+
+                    const response = await fetch(url, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ contents: [{ parts }] })
+                    });
+                    
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.error?.message || "API rejected the request.");
+
+                    setLoading(false);
+                    return extractJSON(data.candidates[0].content.parts[0].text);
+                } catch (err) {
+                    setLoading(false);
+                    setActiveModelInfo("Failed");
+                    setError(`${err.message}`);
+                    return null;
+                }
+            };
+
+            // FEATURE 1: Image Scanner
+            const handleImageAnalysis = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onloadend = async () => {
+                    const base64 = reader.result.split(',')[1];
+                    const prompt = `Analyze this product image. Return ONLY a valid JSON object. Do not include markdown code block syntax. Use EXACTLY these keys:
+                    {"item": "Product name", "rto_rate": "18%", "return_rate": "12%", "risks": ["Risk 1", "Risk 2", "Risk 3"], "packaging_advice": "Advice"}`;
+                    const result = await callGeminiReal(prompt, base64, file.type);
+                    if (result) setScanResult(result);
+                };
+                reader.readAsDataURL(file);
+            };
+
+            // FEATURE 2: Excel Bulk Uploader
+            const handleExcelUpload = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+
+                const reader = new FileReader();
+                reader.onload = async (evt) => {
+                    try {
+                        const data = new Uint8Array(evt.target.result);
+                        const workbook = window.XLSX.read(data, { type: 'array' });
+                        const firstSheetName = workbook.SheetNames[0];
+                        const worksheet = workbook.Sheets[firstSheetName];
+                        
+                        // Convert Excel to JSON array
+                        const rawJsonData = window.XLSX.utils.sheet_to_json(worksheet);
+                        
+                        if (rawJsonData.length === 0) {
+                            throw new Error("The uploaded Excel sheet is empty.");
+                        }
+
+                        // Take up to 100 rows to prevent exceeding token limits
+                        const sampleData = rawJsonData.slice(0, 100);
+
+                        const prompt = `You are a Senior E-commerce Logistics Analyst. I am providing you with a JSON export of an Excel order/sales report.
+                        Analyze this data to find consistency in RTOs (Return to Origin) and Returns.
+                        
+                        Raw Data: ${JSON.stringify(sampleData)}
+
+                        Analyze the data and return ONLY a valid JSON object. Do not use markdown syntax. Use EXACTLY these keys:
+                        {
+                            "overall_insight": "A 2-sentence summary of the biggest inventory/logistics problem found in the sheet.",
+                            "top_offenders": [
+                                {
+                                    "product_name": "Name of the problematic product",
+                                    "issue_type": "State whether it is High RTO or High Return",
+                                    "suspected_reason": "Why you logically suspect this is happening based on the data",
+                                    "listing_fix": "What the seller must fix in the product listing or packaging"
+                                }
+                            ]
+                        }`;
+
+                        const result = await callGeminiReal(prompt);
+                        if (result) setBulkResult(result);
+
+                    } catch (err) {
+                        setError(`Excel Parsing Error: ${err.message}`);
+                        setLoading(false);
+                    }
+                };
+                reader.readAsArrayBuffer(file);
+            };
+
+            // FEATURE 3: RTO RCA 
+            const handleDiagnostic = async () => {
+                const prompt = `Logistics data: 45% returns due to Packaging Damaged. Return ONLY a valid JSON object. Do not include markdown code block syntax. Use EXACTLY these keys:
+                {"root_cause": "Explanation", "actions": ["Step 1", "Step 2", "Step 3"]}`;
+                const result = await callGeminiReal(prompt);
+                if (result) setRcaResult(result);
+            };
+
+            // FEATURE 4: AI Shipping & RTO Calculator
+            const handleShippingCalc = async () => {
+                if (!shippingWeight || !shippingPincode) {
+                    setError("Please enter both weight and pincode.");
+                    return;
+                }
+                
+                const prompt = `Act as an Indian E-commerce Logistics Pricing Engine.
+                Calculate estimated shipping and RTO (Return to Origin) charges for a package weighing ${shippingWeight} kg going to pincode ${shippingPincode}.
+                Identify the city for this pincode.
+                Standard market rates apply (e.g., surface is cheaper, air is more expensive). Base RTO charge is usually equal to or slightly less than the forward charge.
+                Calculate for these 4 couriers: Delhivery, BlueDart, Ecom Express, XpressBees. Make BlueDart the fastest but most expensive.
+                
+                Return ONLY a valid JSON object. Do not include markdown syntax. Use EXACTLY these keys:
+                {
+                    "city": "Name of the city for this pincode",
+                    "best_choice": "Name of the cheapest/best courier",
+                    "insight": "1-sentence explanation of why to pick this courier for this weight.",
+                    "couriers": [
+                        {
+                            "name": "Courier Name",
+                            "forward_charge": "₹45",
+                            "rto_charge": "₹45",
+                            "total_rto_loss": "₹90",
+                            "speed": "2-3 Days"
+                        }
+                    ]
+                }`;
+                const result = await callGeminiReal(prompt);
+                if (result) setShippingResult(result);
+            };
+
+            return (
+                <div className="flex flex-col md:flex-row min-h-screen">
+                    <aside className="w-full md:w-72 bg-white border-r border-slate-200 flex flex-col z-10 p-8 shadow-sm">
+                        <div className="flex items-center gap-4 mb-12">
+                            <div className="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center shadow-xl shadow-indigo-100">
+                                <Icon name="ShieldCheck" className="text-white w-7 h-7" />
+                            </div>
+                            <span className="font-black text-2xl tracking-tighter">GEN-RTO</span>
+                        </div>
+
+                        <nav className="flex-1 space-y-3">
+                            {[
+                                { id: 'overview', icon: 'LayoutDashboard', label: 'Analytics Hub' },
+                                { id: 'bulk', icon: 'FileSpreadsheet', label: 'Bulk Data AI' }, 
+                                { id: 'scan', icon: 'Camera', label: 'AI Product Scan' },
+                                { id: 'logistics', icon: 'Truck', label: 'AI Courier Pricing' }, /* NEW TAB */
+                                { id: 'fixes', icon: 'Zap', label: 'Smart Fixes' },
+                            ].map((item) => (
+                                <button key={item.id} onClick={() => setActiveTab(item.id)}
+                                    className={`w-full flex items-center gap-4 px-5 py-4 rounded-[1.5rem] transition-all duration-300 font-bold ${
+                                        activeTab === item.id ? 'bg-indigo-600 text-white shadow-xl shadow-indigo-100' : 'text-slate-500 hover:bg-slate-50'
+                                    }`}>
+                                    <Icon name={item.icon} className="w-5 h-5" /> <span>{item.label}</span>
+                                </button>
+                            ))}
+                        </nav>
+
+                        <div className="mt-8 bg-slate-50 p-4 rounded-2xl border border-slate-200">
+                            <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-2">
+                                <Icon name="Key" className="w-3 h-3" /> Paste NEW API Key Here
+                            </p>
+                            <input 
+                                type="password" 
+                                className="w-full text-xs p-2 rounded-lg border border-slate-200 outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                                value={apiKey ? "Injected by Preview" : userApiKey}
+                                onChange={(e) => !apiKey && setUserApiKey(e.target.value)}
+                                disabled={!!apiKey}
+                            />
+                            <p className="text-[10px] text-slate-500 font-bold mt-3 border-t border-slate-200 pt-2 flex justify-between items-center">
+                                AI Status: <span className="text-indigo-600 truncate ml-2" title={activeModelName}>{activeModelName}</span>
+                            </p>
+                        </div>
+                    </aside>
+
+                    <main className="flex-1 p-6 md:p-12 overflow-y-auto max-w-7xl mx-auto w-full">
+                        {error && (
+                            <div className="mb-8 p-5 bg-red-50 border border-red-200 rounded-2xl flex items-center gap-4 text-red-700 animate-in">
+                                <div className="bg-red-100 p-2 rounded-xl"><Icon name="AlertCircle" className="w-6 h-6" /></div>
+                                <div><h4 className="font-black text-sm uppercase tracking-widest">Error</h4><p className="font-bold text-sm mt-1">{error}</p></div>
+                            </div>
+                        )}
+
+                        <header className="mb-12">
+                            <h1 className="text-4xl font-black tracking-tight text-slate-900 underline decoration-indigo-200 decoration-8 underline-offset-4">Command Center</h1>
+                            <p className="text-slate-500 mt-2 font-medium">Predicting e-commerce logistics failure through AI.</p>
+                        </header>
+
+                        {/* OVERVIEW TAB */}
+                        {activeTab === 'overview' && (
+                            <div className="space-y-10 animate-in">
+                                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                                    {[{ label: 'Avg RTO Rate', val: '14.2%', color: 'text-red-500', icon: 'Package' }, { label: 'Return Rate', val: '8.5%', color: 'text-orange-500', icon: 'TrendingDown' }, { label: 'Revenue Saved', val: '₹42,300', color: 'text-indigo-600', icon: 'Star' }, { label: 'SLA Score', val: '98/100', color: 'text-green-500', icon: 'CheckCircle2' }].map((kpi, i) => (
+                                        <div key={i} className="bg-white p-8 rounded-[2rem] border border-slate-100 shadow-sm">
+                                            <div className="flex justify-between items-start mb-4">
+                                                <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest">{kpi.label}</p>
+                                                <div className="p-3 bg-slate-50 rounded-2xl"><Icon name={kpi.icon} className="w-5 h-5 text-indigo-600" /></div>
+                                            </div>
+                                            <h2 className={`text-3xl font-black ${kpi.color}`}>{kpi.val}</h2>
+                                        </div>
+                                    ))}
+                                </div>
+                                <div className="grid grid-cols-1 lg:grid-cols-3 gap-10">
+                                    <div className="lg:col-span-2 bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm h-[400px]">
+                                        <h3 className="font-bold text-lg mb-6">RTO Trends</h3>
+                                        <ResponsiveContainer width="100%" height="85%">
+                                            <AreaChart data={TREND_DATA}>
+                                                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                                                <XAxis dataKey="name" axisLine={false} tickLine={false} />
+                                                <YAxis axisLine={false} tickLine={false} />
+                                                <Tooltip />
+                                                <Area type="monotone" dataKey="rto" stroke="#6366f1" fill="#6366f1" fillOpacity={0.1} />
+                                            </AreaChart>
+                                        </ResponsiveContainer>
+                                    </div>
+                                    <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm">
+                                        <h3 className="font-bold text-lg mb-6">Failure Reasons</h3>
+                                        <ResponsiveContainer width="100%" height={220}>
+                                            <PieChart><Pie data={REASONS} innerRadius={60} outerRadius={80} dataKey="value">{REASONS.map((e, i) => <Cell key={i} fill={e.color} />)}</Pie><Tooltip /></PieChart>
+                                        </ResponsiveContainer>
+                                        <div className="mt-6 space-y-3">{REASONS.map((r, i) => <div key={i} className="flex justify-between text-sm font-bold text-slate-600"><div className="flex items-center gap-2"><div className="w-2.5 h-2.5 rounded-full" style={{backgroundColor: r.color}} /> {r.name}</div><span className="text-slate-900">{r.value}%</span></div>)}</div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* NEW FEATURE: BULK REPORT AI */}
+                        {activeTab === 'bulk' && (
+                            <div className="max-w-4xl mx-auto space-y-10 animate-in">
+                                <div className="bg-white p-12 rounded-[3rem] border-2 border-dashed border-slate-200 text-center">
+                                    <div className="w-24 h-24 bg-indigo-50 rounded-[2rem] flex items-center justify-center mx-auto mb-6">
+                                        <Icon name="FileSpreadsheet" className="w-10 h-10 text-indigo-600" />
+                                    </div>
+                                    <h2 className="text-3xl font-black text-slate-900 mb-4">Bulk Order Analysis</h2>
+                                    <p className="text-slate-500 mb-8 max-w-lg mx-auto font-medium">Upload your GST/Order Report (Excel or CSV). The AI will process rows to find which specific product listings are bleeding money due to high RTO or Returns.</p>
+                                    
+                                    <input type="file" id="excel-upload" className="hidden" accept=".csv, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.ms-excel" onChange={handleExcelUpload} />
+                                    <label htmlFor="excel-upload" className={`inline-flex items-center gap-4 px-10 py-5 rounded-[1.5rem] font-black transition-all ${loading ? 'bg-slate-300 text-slate-500 cursor-not-allowed' : 'bg-indigo-600 text-white cursor-pointer shadow-xl hover:bg-indigo-700'}`}>
+                                        <Icon name={loading ? "Loader2" : "Upload"} className={loading ? "animate-spin" : ""} /> {loading ? "Parsing Data & Thinking..." : "Upload Excel Sheet"}
+                                    </label>
+                                </div>
+
+                                {bulkResult && !loading && (
+                                    <div className="space-y-6 animate-in">
+                                        <div className="bg-indigo-600 text-white p-10 rounded-[2.5rem] shadow-xl">
+                                            <h3 className="font-black text-xs uppercase tracking-widest text-indigo-200 mb-4">AI Overall Insight</h3>
+                                            <p className="text-xl font-bold leading-relaxed">{bulkResult.overall_insight}</p>
+                                        </div>
+
+                                        <h3 className="text-2xl font-black text-slate-900 mt-10 mb-6 flex items-center gap-3"><Icon name="AlertTriangle" className="text-orange-500" /> Critical Product Issues</h3>
+                                        
+                                        <div className="grid grid-cols-1 gap-6">
+                                            {bulkResult.top_offenders.map((offender, i) => (
+                                                <div key={i} className="bg-white p-8 rounded-[2rem] border border-slate-100 shadow-sm flex flex-col md:flex-row gap-8">
+                                                    <div className="md:w-1/3 border-b md:border-b-0 md:border-r border-slate-100 pb-6 md:pb-0 md:pr-6">
+                                                        <span className={`inline-flex items-center gap-2 px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest mb-4 ${offender.issue_type.toLowerCase().includes('rto') ? 'bg-red-50 text-red-600' : 'bg-orange-50 text-orange-600'}`}>
+                                                            <Icon name="AlertCircle" className="w-3 h-3" /> {offender.issue_type}
+                                                        </span>
+                                                        <h4 className="text-xl font-black text-slate-900 leading-tight">{offender.product_name}</h4>
+                                                    </div>
+                                                    <div className="md:w-2/3 space-y-4">
+                                                        <div>
+                                                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">AI Diagnostics (Why it's failing)</p>
+                                                            <p className="text-slate-700 font-bold">{offender.suspected_reason}</p>
+                                                        </div>
+                                                        <div className="p-4 bg-slate-50 rounded-[1.5rem] border border-slate-100">
+                                                            <p className="text-[10px] font-black text-indigo-500 uppercase tracking-widest mb-1 flex items-center gap-2"><Icon name="Zap" className="w-3 h-3" /> Required Fix</p>
+                                                            <p className="text-sm font-bold text-slate-800">{offender.listing_fix}</p>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {/* NEW FEATURE: AI SHIPPING CALCULATOR */}
+                        {activeTab === 'logistics' && (
+                            <div className="max-w-4xl mx-auto space-y-10 animate-in">
+                                <div className="bg-white p-12 rounded-[3rem] border border-slate-100 shadow-sm">
+                                    <h3 className="text-3xl font-black mb-4 text-slate-800 flex items-center gap-3">
+                                        <div className="w-12 h-12 bg-indigo-50 rounded-[1rem] flex items-center justify-center"><Icon name="Truck" className="text-indigo-600 w-6 h-6" /></div>
+                                        AI Courier Pricing Engine
+                                    </h3>
+                                    <p className="text-slate-500 mb-8 font-medium">Input your product weight and destination pincode. The AI will instantly calculate expected forward charges, RTO penalties, and identify the most cost-effective partner.</p>
+                                    
+                                    <div className="flex flex-col md:flex-row gap-6 mb-8">
+                                        <div className="flex-1">
+                                            <label className="text-xs font-black text-slate-400 uppercase tracking-widest mb-2 block">Product Weight (KG)</label>
+                                            <input type="number" step="0.1" min="0.1" placeholder="e.g. 0.5" className="w-full px-6 py-4 bg-slate-50 rounded-[1.5rem] border border-slate-200 font-bold outline-none focus:ring-2 focus:ring-indigo-500" value={shippingWeight} onChange={(e) => setShippingWeight(e.target.value)} />
+                                        </div>
+                                        <div className="flex-1">
+                                            <label className="text-xs font-black text-slate-400 uppercase tracking-widest mb-2 block">Destination Pincode</label>
+                                            <input type="text" placeholder="e.g. 400001" className="w-full px-6 py-4 bg-slate-50 rounded-[1.5rem] border border-slate-200 font-bold outline-none focus:ring-2 focus:ring-indigo-500" value={shippingPincode} onChange={(e) => setShippingPincode(e.target.value)} />
+                                        </div>
+                                    </div>
+                                    
+                                    <button onClick={handleShippingCalc} disabled={loading} className={`w-full md:w-auto px-10 py-5 rounded-[1.5rem] font-black transition-all shadow-xl flex justify-center items-center gap-3 ${loading ? 'bg-indigo-800 text-indigo-400 cursor-not-allowed' : 'bg-indigo-600 text-white hover:bg-indigo-700 active:scale-95'}`}>
+                                        <Icon name={loading ? "Loader2" : "Calculator"} className={loading ? "animate-spin" : ""} />
+                                        {loading ? "Calculating Rates..." : "Calculate Best RTO & Shipping Rates"}
+                                    </button>
+                                </div>
+
+                                {shippingResult && !loading && (
+                                    <div className="space-y-6 animate-in">
+                                        <div className="bg-green-50 border border-green-200 p-8 rounded-[2.5rem] flex flex-col md:flex-row items-center gap-6 shadow-sm relative overflow-hidden">
+                                            <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center shrink-0 z-10">
+                                                <Icon name="TrendingDown" className="text-green-600 w-8 h-8" />
+                                            </div>
+                                            <div className="z-10">
+                                                <div className="flex items-center gap-3 mb-1">
+                                                    <p className="text-[10px] font-black text-green-500 uppercase tracking-widest">AI Recommendation</p>
+                                                    {shippingResult.city && (
+                                                        <span className="px-2 py-0.5 bg-green-200 text-green-800 rounded-md text-[10px] font-bold flex items-center gap-1">
+                                                            <Icon name="MapPin" className="w-3 h-3" /> {shippingResult.city}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                <h4 className="text-2xl font-black text-slate-900 mb-2">Use {shippingResult.best_choice}</h4>
+                                                <p className="text-green-800 font-medium">{shippingResult.insight}</p>
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                                            {shippingResult.couriers.map((courier, i) => (
+                                                <div key={i} className={`p-8 rounded-[2rem] border-2 transition-all ${shippingResult.best_choice.toLowerCase() === courier.name.toLowerCase() ? 'bg-white border-indigo-500 shadow-xl shadow-indigo-100' : 'bg-white border-slate-100 shadow-sm hover:border-indigo-200'}`}>
+                                                    <div className="flex justify-between items-start mb-6">
+                                                        <h5 className="text-xl font-black text-slate-800">{courier.name}</h5>
+                                                        <span className="px-3 py-1 bg-slate-100 text-slate-600 rounded-lg text-xs font-bold flex items-center gap-1"><Icon name="Clock" className="w-3 h-3" /> {courier.speed}</span>
+                                                    </div>
+                                                    
+                                                    <div className="space-y-4 mb-6">
+                                                        <div className="flex justify-between items-center text-sm">
+                                                            <span className="font-bold text-slate-500">Forward Charge</span>
+                                                            <span className="font-black text-slate-900">{courier.forward_charge}</span>
+                                                        </div>
+                                                        <div className="flex justify-between items-center text-sm">
+                                                            <span className="font-bold text-red-400">RTO Penalty</span>
+                                                            <span className="font-black text-red-500">{courier.rto_charge}</span>
+                                                        </div>
+                                                    </div>
+                                                    
+                                                    <div className="pt-4 border-t border-slate-100 flex justify-between items-center">
+                                                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total Risk (If RTO Happens)</span>
+                                                        <span className="text-xl font-black text-red-600">{courier.total_rto_loss}</span>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {/* FIXES TAB */}
+                        {activeTab === 'fixes' && (
+                            <div className="max-w-4xl mx-auto space-y-10 animate-in">
+                                <div className="bg-indigo-600 p-12 rounded-[3.5rem] text-white">
+                                    <h2 className="text-4xl font-black mb-6 italic">Actionable Intelligence</h2>
+                                    <button onClick={handleDiagnostic} disabled={loading} className={`flex items-center gap-4 px-10 py-5 rounded-[1.5rem] font-black transition-all ${loading ? 'bg-indigo-800 text-indigo-400' : 'bg-white text-indigo-600 shadow-xl'}`}>
+                                        <Icon name={loading ? "Loader2" : "Zap"} className={loading ? "animate-spin" : ""} /> {loading ? "Running..." : "Run Root Cause Analysis"}
+                                    </button>
+                                </div>
+                                {rcaResult && !loading && (
+                                    <div className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm animate-in">
+                                        <h4 className="text-xs font-black text-indigo-400 uppercase tracking-widest mb-2">Detected Root Cause</h4>
+                                        <p className="text-xl font-bold text-slate-800 mb-10 italic">"{rcaResult.root_cause}"</p>
+                                        <div className="space-y-4">
+                                            {rcaResult.actions.map((act, i) => (
+                                                <div key={i} className="flex items-center gap-5 p-6 bg-slate-50 rounded-[2rem] font-bold text-slate-700">
+                                                    <div className="w-10 h-10 rounded-2xl bg-indigo-600 text-white flex items-center justify-center">{i+1}</div> {act}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </main>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
