@@ -14,7 +14,7 @@
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     
-    <!-- NEW: SheetJS for Excel Parsing -->
+    <!-- SheetJS for Excel Parsing -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
     <style>
@@ -72,9 +72,7 @@
             // Feature States
             const [scanResult, setScanResult] = useState(null);
             const [rcaResult, setRcaResult] = useState(null);
-            const [bulkResult, setBulkResult] = useState(null); // NEW: State for Excel Data
-            
-            // NEW: State for Shipping Calculator
+            const [bulkResult, setBulkResult] = useState(null); 
             const [shippingWeight, setShippingWeight] = useState("0.5");
             const [shippingPincode, setShippingPincode] = useState("");
             const [shippingResult, setShippingResult] = useState(null);
@@ -98,23 +96,24 @@
                 setActiveModelInfo("Processing request...");
 
                 const finalKey = apiKey || userApiKey.trim();
-                
-                if (!finalKey) {
-                    setError("Missing API Key. Please paste your NEW API key in the sidebar.");
-                    setLoading(false); return null;
-                }
-                if (!finalKey.startsWith("AIza") || finalKey.length > 100) {
-                    setError("Invalid API Key format. Google API keys start with 'AIza'.");
-                    setLoading(false); return null;
-                }
+                let activeModel = "gemini-2.5-flash-preview-09-2025"; 
+                let fetchUrl = "";
 
                 try {
-                    let activeModel = "";
+                    if (!finalKey) {
+                        throw new Error("Missing API Key. Please paste your NEW API key in the sidebar.");
+                    }
 
-                    // Auto-Discover the correct model for the user's specific key
+                    // Auto-Discovery or Canvas Proxy
                     if (apiKey) {
-                        activeModel = "gemini-2.5-flash-preview-09-2025";
+                        // We are in the Canvas preview, use the injected key securely
+                        fetchUrl = `https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent?key=${apiKey}`;
                     } else {
+                        // We are on GitHub, validate user's custom key
+                        if (!finalKey.startsWith("AIza") || finalKey.length > 100) {
+                            throw new Error("Invalid API Key format. Google API keys start with 'AIza'.");
+                        }
+                        
                         const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${finalKey}`);
                         const listData = await listRes.json();
                         
@@ -131,15 +130,15 @@
                             : ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-pro'];
                             
                         activeModel = preferred.find(m => validModels.includes(m)) || validModels[0];
+                        fetchUrl = `https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent?key=${finalKey}`;
                     }
 
                     setActiveModelInfo(`Using: ${activeModel}`);
 
-                    const url = `https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent?key=${finalKey}`;
                     const parts = [{ text: promptText }];
                     if (imageBase64) parts.push({ inlineData: { mimeType: mimeType, data: imageBase64 } });
 
-                    const response = await fetch(url, {
+                    const response = await fetch(fetchUrl, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ contents: [{ parts }] })
@@ -162,6 +161,10 @@
             const handleImageAnalysis = (e) => {
                 const file = e.target.files[0];
                 if (!file) return;
+                
+                // Clear the input synchronously to prevent React crashes and allow re-uploads
+                e.target.value = null; 
+                
                 const reader = new FileReader();
                 reader.onloadend = async () => {
                     const base64 = reader.result.split(',')[1];
@@ -177,6 +180,7 @@
             const handleExcelUpload = (e) => {
                 const file = e.target.files[0];
                 if (!file) return;
+                e.target.value = null;
 
                 const reader = new FileReader();
                 reader.onload = async (evt) => {
@@ -186,14 +190,9 @@
                         const firstSheetName = workbook.SheetNames[0];
                         const worksheet = workbook.Sheets[firstSheetName];
                         
-                        // Convert Excel to JSON array
                         const rawJsonData = window.XLSX.utils.sheet_to_json(worksheet);
-                        
-                        if (rawJsonData.length === 0) {
-                            throw new Error("The uploaded Excel sheet is empty.");
-                        }
+                        if (rawJsonData.length === 0) throw new Error("The uploaded Excel sheet is empty.");
 
-                        // Take up to 100 rows to prevent exceeding token limits
                         const sampleData = rawJsonData.slice(0, 100);
 
                         const prompt = `You are a Senior E-commerce Logistics Analyst. I am providing you with a JSON export of an Excel order/sales report.
@@ -280,7 +279,7 @@
                                 { id: 'overview', icon: 'LayoutDashboard', label: 'Analytics Hub' },
                                 { id: 'bulk', icon: 'FileSpreadsheet', label: 'Bulk Data AI' }, 
                                 { id: 'scan', icon: 'Camera', label: 'AI Product Scan' },
-                                { id: 'logistics', icon: 'Truck', label: 'AI Courier Pricing' }, /* NEW TAB */
+                                { id: 'logistics', icon: 'Truck', label: 'AI Courier Pricing' },
                                 { id: 'fixes', icon: 'Zap', label: 'Smart Fixes' },
                             ].map((item) => (
                                 <button key={item.id} onClick={() => setActiveTab(item.id)}
@@ -360,7 +359,7 @@
                             </div>
                         )}
 
-                        {/* NEW FEATURE: BULK REPORT AI */}
+                        {/* BULK REPORT AI */}
                         {activeTab === 'bulk' && (
                             <div className="max-w-4xl mx-auto space-y-10 animate-in">
                                 <div className="bg-white p-12 rounded-[3rem] border-2 border-dashed border-slate-200 text-center">
@@ -380,28 +379,28 @@
                                     <div className="space-y-6 animate-in">
                                         <div className="bg-indigo-600 text-white p-10 rounded-[2.5rem] shadow-xl">
                                             <h3 className="font-black text-xs uppercase tracking-widest text-indigo-200 mb-4">AI Overall Insight</h3>
-                                            <p className="text-xl font-bold leading-relaxed">{bulkResult.overall_insight}</p>
+                                            <p className="text-xl font-bold leading-relaxed">{bulkResult.overall_insight || 'No insights generated.'}</p>
                                         </div>
 
                                         <h3 className="text-2xl font-black text-slate-900 mt-10 mb-6 flex items-center gap-3"><Icon name="AlertTriangle" className="text-orange-500" /> Critical Product Issues</h3>
                                         
                                         <div className="grid grid-cols-1 gap-6">
-                                            {bulkResult.top_offenders.map((offender, i) => (
+                                            {(Array.isArray(bulkResult.top_offenders) ? bulkResult.top_offenders : []).map((offender, i) => (
                                                 <div key={i} className="bg-white p-8 rounded-[2rem] border border-slate-100 shadow-sm flex flex-col md:flex-row gap-8">
                                                     <div className="md:w-1/3 border-b md:border-b-0 md:border-r border-slate-100 pb-6 md:pb-0 md:pr-6">
-                                                        <span className={`inline-flex items-center gap-2 px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest mb-4 ${offender.issue_type.toLowerCase().includes('rto') ? 'bg-red-50 text-red-600' : 'bg-orange-50 text-orange-600'}`}>
-                                                            <Icon name="AlertCircle" className="w-3 h-3" /> {offender.issue_type}
+                                                        <span className={`inline-flex items-center gap-2 px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest mb-4 ${(offender.issue_type || '').toLowerCase().includes('rto') ? 'bg-red-50 text-red-600' : 'bg-orange-50 text-orange-600'}`}>
+                                                            <Icon name="AlertCircle" className="w-3 h-3" /> {offender.issue_type || 'Unknown'}
                                                         </span>
-                                                        <h4 className="text-xl font-black text-slate-900 leading-tight">{offender.product_name}</h4>
+                                                        <h4 className="text-xl font-black text-slate-900 leading-tight">{offender.product_name || 'Unknown Product'}</h4>
                                                     </div>
                                                     <div className="md:w-2/3 space-y-4">
                                                         <div>
                                                             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">AI Diagnostics (Why it's failing)</p>
-                                                            <p className="text-slate-700 font-bold">{offender.suspected_reason}</p>
+                                                            <p className="text-slate-700 font-bold">{offender.suspected_reason || 'N/A'}</p>
                                                         </div>
                                                         <div className="p-4 bg-slate-50 rounded-[1.5rem] border border-slate-100">
                                                             <p className="text-[10px] font-black text-indigo-500 uppercase tracking-widest mb-1 flex items-center gap-2"><Icon name="Zap" className="w-3 h-3" /> Required Fix</p>
-                                                            <p className="text-sm font-bold text-slate-800">{offender.listing_fix}</p>
+                                                            <p className="text-sm font-bold text-slate-800">{offender.listing_fix || 'N/A'}</p>
                                                         </div>
                                                     </div>
                                                 </div>
@@ -412,7 +411,35 @@
                             </div>
                         )}
 
-                        {/* NEW FEATURE: AI SHIPPING CALCULATOR */}
+                        {/* SCANNER TAB */}
+                        {activeTab === 'scan' && (
+                            <div className="max-w-4xl mx-auto space-y-10 animate-in">
+                                <div className="bg-white p-16 rounded-[3rem] border-2 border-dashed border-slate-200 text-center">
+                                    <h2 className="text-3xl font-black text-slate-900 mb-6">Visual Product Analysis</h2>
+                                    <input type="file" id="scan-upload" className="hidden" accept="image/*" onChange={handleImageAnalysis} />
+                                    <label htmlFor="scan-upload" className={`inline-flex items-center gap-4 px-10 py-5 rounded-[1.5rem] font-black transition-all ${loading ? 'bg-slate-300 text-slate-500 cursor-not-allowed' : 'bg-indigo-600 text-white cursor-pointer shadow-xl hover:bg-indigo-700'}`}>
+                                        <Icon name={loading ? "Loader2" : "Upload"} className={loading ? "animate-spin" : ""} /> {loading ? "Analyzing..." : "Upload Image"}
+                                    </label>
+                                </div>
+                                {scanResult && !loading && (
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-10 animate-in">
+                                        <div className="bg-white p-10 rounded-[2.5rem] shadow-sm border border-slate-100">
+                                            <h3 className="text-3xl font-black capitalize mb-6">{scanResult.item || 'Unknown Item'}</h3>
+                                            <div className="flex gap-6"><div className="flex-1 bg-red-50 p-6 rounded-3xl"><p className="text-xs font-bold text-red-400">RTO Risk</p><p className="text-3xl font-black text-red-600">{scanResult.rto_rate || 'N/A'}</p></div></div>
+                                        </div>
+                                        <div className="bg-slate-900 text-white p-10 rounded-[2.5rem]">
+                                            <h4 className="font-black text-xl mb-4">Risks</h4>
+                                            <ul className="space-y-2 mb-6 text-sm">
+                                                {(Array.isArray(scanResult.risks) ? scanResult.risks : []).map((r, i) => <li key={i}>• {r}</li>)}
+                                            </ul>
+                                            <p className="text-xs text-indigo-300 italic">Fix: {scanResult.packaging_advice || 'No advice generated.'}</p>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {/* AI SHIPPING CALCULATOR */}
                         {activeTab === 'logistics' && (
                             <div className="max-w-4xl mx-auto space-y-10 animate-in">
                                 <div className="bg-white p-12 rounded-[3rem] border border-slate-100 shadow-sm">
@@ -454,33 +481,33 @@
                                                         </span>
                                                     )}
                                                 </div>
-                                                <h4 className="text-2xl font-black text-slate-900 mb-2">Use {shippingResult.best_choice}</h4>
-                                                <p className="text-green-800 font-medium">{shippingResult.insight}</p>
+                                                <h4 className="text-2xl font-black text-slate-900 mb-2">Use {shippingResult.best_choice || 'N/A'}</h4>
+                                                <p className="text-green-800 font-medium">{shippingResult.insight || 'No insight available.'}</p>
                                             </div>
                                         </div>
 
                                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                                            {shippingResult.couriers.map((courier, i) => (
-                                                <div key={i} className={`p-8 rounded-[2rem] border-2 transition-all ${shippingResult.best_choice.toLowerCase() === courier.name.toLowerCase() ? 'bg-white border-indigo-500 shadow-xl shadow-indigo-100' : 'bg-white border-slate-100 shadow-sm hover:border-indigo-200'}`}>
+                                            {(Array.isArray(shippingResult.couriers) ? shippingResult.couriers : []).map((courier, i) => (
+                                                <div key={i} className={`p-8 rounded-[2rem] border-2 transition-all ${(shippingResult.best_choice || '').toLowerCase() === (courier.name || '').toLowerCase() ? 'bg-white border-indigo-500 shadow-xl shadow-indigo-100' : 'bg-white border-slate-100 shadow-sm hover:border-indigo-200'}`}>
                                                     <div className="flex justify-between items-start mb-6">
-                                                        <h5 className="text-xl font-black text-slate-800">{courier.name}</h5>
-                                                        <span className="px-3 py-1 bg-slate-100 text-slate-600 rounded-lg text-xs font-bold flex items-center gap-1"><Icon name="Clock" className="w-3 h-3" /> {courier.speed}</span>
+                                                        <h5 className="text-xl font-black text-slate-800">{courier.name || 'Unknown'}</h5>
+                                                        <span className="px-3 py-1 bg-slate-100 text-slate-600 rounded-lg text-xs font-bold flex items-center gap-1"><Icon name="Clock" className="w-3 h-3" /> {courier.speed || 'N/A'}</span>
                                                     </div>
                                                     
                                                     <div className="space-y-4 mb-6">
                                                         <div className="flex justify-between items-center text-sm">
                                                             <span className="font-bold text-slate-500">Forward Charge</span>
-                                                            <span className="font-black text-slate-900">{courier.forward_charge}</span>
+                                                            <span className="font-black text-slate-900">{courier.forward_charge || '-'}</span>
                                                         </div>
                                                         <div className="flex justify-between items-center text-sm">
                                                             <span className="font-bold text-red-400">RTO Penalty</span>
-                                                            <span className="font-black text-red-500">{courier.rto_charge}</span>
+                                                            <span className="font-black text-red-500">{courier.rto_charge || '-'}</span>
                                                         </div>
                                                     </div>
                                                     
                                                     <div className="pt-4 border-t border-slate-100 flex justify-between items-center">
-                                                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total Risk (If RTO Happens)</span>
-                                                        <span className="text-xl font-black text-red-600">{courier.total_rto_loss}</span>
+                                                        <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total Risk</span>
+                                                        <span className="text-xl font-black text-red-600">{courier.total_rto_loss || '-'}</span>
                                                     </div>
                                                 </div>
                                             ))}
@@ -495,16 +522,16 @@
                             <div className="max-w-4xl mx-auto space-y-10 animate-in">
                                 <div className="bg-indigo-600 p-12 rounded-[3.5rem] text-white">
                                     <h2 className="text-4xl font-black mb-6 italic">Actionable Intelligence</h2>
-                                    <button onClick={handleDiagnostic} disabled={loading} className={`flex items-center gap-4 px-10 py-5 rounded-[1.5rem] font-black transition-all ${loading ? 'bg-indigo-800 text-indigo-400' : 'bg-white text-indigo-600 shadow-xl'}`}>
+                                    <button onClick={handleDiagnostic} disabled={loading} className={`flex items-center gap-4 px-10 py-5 rounded-[1.5rem] font-black transition-all ${loading ? 'bg-indigo-800 text-indigo-400 cursor-not-allowed' : 'bg-white text-indigo-600 shadow-xl'}`}>
                                         <Icon name={loading ? "Loader2" : "Zap"} className={loading ? "animate-spin" : ""} /> {loading ? "Running..." : "Run Root Cause Analysis"}
                                     </button>
                                 </div>
                                 {rcaResult && !loading && (
                                     <div className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm animate-in">
                                         <h4 className="text-xs font-black text-indigo-400 uppercase tracking-widest mb-2">Detected Root Cause</h4>
-                                        <p className="text-xl font-bold text-slate-800 mb-10 italic">"{rcaResult.root_cause}"</p>
+                                        <p className="text-xl font-bold text-slate-800 mb-10 italic">"{rcaResult.root_cause || 'No explanation found.'}"</p>
                                         <div className="space-y-4">
-                                            {rcaResult.actions.map((act, i) => (
+                                            {(Array.isArray(rcaResult.actions) ? rcaResult.actions : []).map((act, i) => (
                                                 <div key={i} className="flex items-center gap-5 p-6 bg-slate-50 rounded-[2rem] font-bold text-slate-700">
                                                     <div className="w-10 h-10 rounded-2xl bg-indigo-600 text-white flex items-center justify-center">{i+1}</div> {act}
                                                 </div>
